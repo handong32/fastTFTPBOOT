@@ -7,7 +7,7 @@ libpcap
 
 ## Build
 
-make
+make LPCAPDIR=DIR_TO_LIBPCAP
 
 ## Run
 
