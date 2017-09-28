@@ -5,12 +5,25 @@
 #include <limits.h>
 #include <unistd.h>
 #include <errno.h>
-#include <sys/types.h>
-#include <sys/select.h>
 #include <poll.h>
 
-#include <pcap.h>
+#include <sys/types.h>
+#include <sys/select.h>
+#include <sys/ioctl.h>    
+#include <sys/socket.h>
 
+#include <linux/if_packet.h>
+#include <linux/ip.h>
+#include <linux/udp.h>
+#include <linux/in.h>
+
+#include <net/if.h>
+#include <netinet/ether.h>
+
+#include <pcap.h>
+#include "dhcp.h"
+
+#define ETHER_TYPE	0x0800
 #define MAXIMUM_SNAPLEN		65535
 
 static char *program_name;
@@ -26,12 +39,31 @@ extern int optind;
 extern int opterr;
 extern char *optarg;
 
+unsigned char macaddr[ETHER_ADDR_LEN];
+
+void getmacaddr(char *eth) {
+  int s;
+  struct ifreq buffer;
+  
+  s = socket(PF_INET, SOCK_DGRAM, 0);
+  memset(&buffer, 0x00, sizeof(buffer));
+  strcpy(buffer.ifr_name, eth);
+  ioctl(s, SIOCGIFHWADDR, &buffer);
+  close(s);
+
+  for(s = 0; s < ETHER_ADDR_LEN; s++ )
+  {
+    macaddr[s] = (unsigned char)buffer.ifr_hwaddr.sa_data[s];
+  }  
+}
+
 int
 main(int argc, char **argv)
 {
   register int op;
   register char *cp, *cmdbuf, *device;
   char ebuf[PCAP_ERRBUF_SIZE];
+  struct ifreq if_ip;	/* get ip addr */
   int status;
   int packet_count;
   
@@ -67,6 +99,8 @@ main(int argc, char **argv)
   if (pd == NULL)
     error("%s", ebuf);
 
+  getmacaddr(device);
+  
   // amount of frame buffer to read
   status = pcap_set_snaplen(pd, MAXIMUM_SNAPLEN);
   if (status != 0)
@@ -98,7 +132,7 @@ main(int argc, char **argv)
 
   //TODO set nonblock
 
-  printf("Listening on %s\n", device);
+  printf("Listening on %s, macaddr=%02X %02X %02X %02X %02X %02X\n", device, macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
   packet_count = 0;
   for (;;) {
     status = pcap_dispatch(pd, -1, dumpt,
@@ -130,20 +164,35 @@ main(int argc, char **argv)
 }
 
 // pcap_handler
-static void
-dumpt(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes)
-{
-  int i = 0;
-  int len = 20;
+static void dumpt(u_char *user, const struct pcap_pkthdr *h, const u_char *bytes) {
+  struct ifreq if_ip;	/* get ip addr */
+	
   int *counterp = (int *)user;
+  int len = h->caplen;
   
-  printf("Packet number: %d\n", (*counterp));
+  /* Header structures */
+  struct ether_header *eh = (struct ether_header *) bytes;
+  struct iphdr *iph = (struct iphdr *) (bytes+ sizeof(struct ether_header));
+  struct udphdr *udph = (struct udphdr *) (bytes + sizeof(struct iphdr) + sizeof(struct ether_header));
+  struct dhcp_packet *dhcp = (struct dhcp_packet*)  (bytes + sizeof(struct iphdr) + sizeof(struct ether_header) + sizeof(struct udphdr));
+  
+  memset(&if_ip, 0, sizeof(struct ifreq));
+
+  if(dhcp->op != BOOTREQUEST) {
+    return;
+  }
+
+  printf("BOOTREQUEST from %02X %02X %02X %02X %02X %02X\n", dhcp->chaddr[0], dhcp->chaddr[1], dhcp->chaddr[2], dhcp->chaddr[3], dhcp->chaddr[4], dhcp->chaddr[5]); 
+  printf("op -> 0x%X \nhtype -> 0x%X\n hlen -> 0x%X\n hops -> 0x%X\n xid -> 0x%X\n flags -> 0x%X\n", dhcp->op, dhcp->htype, dhcp->hlen, dhcp->hops, dhcp->xid, dhcp->flags);
+  
+  /*printf("Packet number: %d\n", (*counterp));
   for(i = 0; i < len; i++)
   {
     printf("0x%X ", bytes[i]);
   }
   printf("\n");
-
+  */
+  
   (*counterp)++;
 }
 
